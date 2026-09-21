@@ -66,12 +66,15 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { UserOutlined, LockOutlined, BookOutlined } from '@ant-design/icons-vue'
 import { users } from '@/data/mockData'
+import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const route = useRoute()
+const authStore = useAuthStore()
 const loading = ref(false)
 
 const formState = reactive({
@@ -94,14 +97,22 @@ async function handleLogin() {
   )
 
   if (user) {
-    localStorage.setItem('library_user', JSON.stringify({
+    authStore.login({
       username: user.username,
       name: user.name,
       role: user.role,
       avatar: user.avatar
-    }))
+    })
     message.success(`欢迎回来，${user.name}！`)
-    router.push('/dashboard')
+    // 回跳登录前被拦截的页面；仅允许站内路径，默认进入首页
+    const redirect = route.query.redirect
+    const target = typeof redirect === 'string' &&
+      redirect.startsWith('/') &&
+      !redirect.startsWith('//') &&
+      redirect !== '/login'
+      ? redirect
+      : '/dashboard'
+    router.replace(target)
   } else {
     message.error('用户名或密码错误')
   }

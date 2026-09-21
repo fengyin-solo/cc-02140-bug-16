@@ -19,25 +19,9 @@
         :inline-collapsed="collapsed"
         @click="handleMenuClick"
       >
-        <a-menu-item key="dashboard">
-          <template #icon><DashboardOutlined /></template>
-          <span>首页概览</span>
-        </a-menu-item>
-        <a-menu-item key="books">
-          <template #icon><BookOutlined /></template>
-          <span>图书管理</span>
-        </a-menu-item>
-        <a-menu-item key="readers">
-          <template #icon><UserOutlined /></template>
-          <span>读者管理</span>
-        </a-menu-item>
-        <a-menu-item key="borrow">
-          <template #icon><SwapOutlined /></template>
-          <span>借阅管理</span>
-        </a-menu-item>
-        <a-menu-item key="categories">
-          <template #icon><AppstoreOutlined /></template>
-          <span>分类管理</span>
+        <a-menu-item v-for="item in visibleMenuItems" :key="item.key">
+          <template #icon><component :is="item.icon" /></template>
+          <span>{{ item.title }}</span>
         </a-menu-item>
       </a-menu>
     </a-layout-sider>
@@ -72,8 +56,12 @@
               <DownOutlined />
             </div>
             <template #overlay>
-              <a-menu>
-                <a-menu-item key="logout" @click="handleLogout">
+              <a-menu @click="handleUserMenuClick">
+                <a-menu-item key="role" disabled class="role-item">
+                  当前角色：{{ roleName }}
+                </a-menu-item>
+                <a-menu-divider />
+                <a-menu-item key="logout">
                   <LogoutOutlined />
                   退出登录
                 </a-menu-item>
@@ -95,7 +83,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
@@ -109,27 +97,36 @@ import {
   DownOutlined,
   LogoutOutlined
 } from '@ant-design/icons-vue'
+import { useAuthStore, AUTH_STORAGE_KEY } from '@/stores/auth'
 
 const router = useRouter()
 const route = useRoute()
+const authStore = useAuthStore()
 
 const collapsed = ref(false)
 const selectedKeys = ref(['dashboard'])
 
-const userInfo = computed(() => {
-  const stored = localStorage.getItem('library_user')
-  return stored ? JSON.parse(stored) : { name: '用户', avatar: '' }
-})
+// 菜单配置：roles 与路由 meta.roles 保持一致，按当前登录角色过滤
+const menuItems = [
+  { key: 'dashboard', title: '首页概览', icon: DashboardOutlined, roles: ['admin', 'librarian'] },
+  { key: 'books', title: '图书管理', icon: BookOutlined, roles: ['admin', 'librarian'] },
+  { key: 'readers', title: '读者管理', icon: UserOutlined, roles: ['admin'] },
+  { key: 'borrow', title: '借阅管理', icon: SwapOutlined, roles: ['admin', 'librarian'] },
+  { key: 'categories', title: '分类管理', icon: AppstoreOutlined, roles: ['admin'] }
+]
+
+const visibleMenuItems = computed(() =>
+  menuItems.filter(item => authStore.hasRole(item.roles))
+)
+
+const userInfo = computed(() => authStore.user || { name: '用户', avatar: '' })
+
+const roleNames = { admin: '管理员', librarian: '图书管理员' }
+const roleName = computed(() => roleNames[authStore.userRole] || '未知角色')
 
 const currentTitle = computed(() => {
-  const titles = {
-    dashboard: '首页概览',
-    books: '图书管理',
-    readers: '读者管理',
-    borrow: '借阅管理',
-    categories: '分类管理'
-  }
-  return titles[selectedKeys.value[0]] || ''
+  const current = menuItems.find(item => item.key === selectedKeys.value[0])
+  return current ? current.title : ''
 })
 
 watch(
@@ -146,6 +143,13 @@ function handleMenuClick({ key }) {
   router.push(`/${key}`)
 }
 
+// 用户下拉菜单统一在菜单级处理点击，避免菜单项级事件偶发丢失
+function handleUserMenuClick({ key }) {
+  if (key === 'logout') {
+    handleLogout()
+  }
+}
+
 function handleLogout() {
   Modal.confirm({
     title: '确认退出',
@@ -153,12 +157,53 @@ function handleLogout() {
     okText: '确定',
     cancelText: '取消',
     onOk() {
-      localStorage.removeItem('library_user')
-      message.success('已退出登录')
-      router.push('/login')
+      doLogout('已退出登录')
     }
   })
 }
+
+// 退出清理：清空登录状态与本地存储，并替换当前历史记录，
+// 确保退出后通过浏览器后退也无法再回到管理页面
+function doLogout(tip) {
+  authStore.logout()
+  if (tip) {
+    message.success(tip)
+  }
+  router.replace('/login')
+}
+
+// 会话失效（过期或已被清理）时立即中止当前操作并回到登录页
+function handleSessionExpired(tip) {
+  authStore.logout()
+  message.warning(tip)
+  router.replace('/login')
+}
+
+// 其他标签页退出或清理登录态时，本页同步失效
+function handleStorageSync(event) {
+  if (event.key && event.key !== AUTH_STORAGE_KEY) return
+  authStore.restore()
+  if (!authStore.checkSession()) {
+    handleSessionExpired('登录状态已失效，请重新登录')
+  }
+}
+
+let sessionTimer = null
+
+onMounted(() => {
+  // 定时校验令牌有效期，防止令牌失效后页面仍显示为已登录
+  sessionTimer = setInterval(() => {
+    if (!authStore.checkSession()) {
+      handleSessionExpired('登录已过期，请重新登录')
+    }
+  }, 30 * 1000)
+  window.addEventListener('storage', handleStorageSync)
+})
+
+onUnmounted(() => {
+  clearInterval(sessionTimer)
+  window.removeEventListener('storage', handleStorageSync)
+})
 </script>
 
 <style lang="less" scoped>
@@ -289,6 +334,11 @@ function handleLogout() {
     font-weight: 500;
     color: #333;
   }
+}
+
+// 下拉菜单中的角色展示项
+.role-item {
+  cursor: default !important;
 }
 
 .content {
