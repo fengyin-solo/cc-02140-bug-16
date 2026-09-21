@@ -19,25 +19,9 @@
         :inline-collapsed="collapsed"
         @click="handleMenuClick"
       >
-        <a-menu-item key="dashboard">
-          <template #icon><DashboardOutlined /></template>
-          <span>首页概览</span>
-        </a-menu-item>
-        <a-menu-item key="books">
-          <template #icon><BookOutlined /></template>
-          <span>图书管理</span>
-        </a-menu-item>
-        <a-menu-item key="readers">
-          <template #icon><UserOutlined /></template>
-          <span>读者管理</span>
-        </a-menu-item>
-        <a-menu-item key="borrow">
-          <template #icon><SwapOutlined /></template>
-          <span>借阅管理</span>
-        </a-menu-item>
-        <a-menu-item key="categories">
-          <template #icon><AppstoreOutlined /></template>
-          <span>分类管理</span>
+        <a-menu-item v-for="menu in visibleMenus" :key="menu.key">
+          <template #icon><component :is="menu.icon" /></template>
+          <span>{{ menu.title }}</span>
         </a-menu-item>
       </a-menu>
     </a-layout-sider>
@@ -73,6 +57,11 @@
             </div>
             <template #overlay>
               <a-menu>
+                <a-menu-item key="role" disabled>
+                  <SafetyCertificateOutlined />
+                  当前角色：{{ roleText }}
+                </a-menu-item>
+                <a-menu-divider />
                 <a-menu-item key="logout" @click="handleLogout">
                   <LogoutOutlined />
                   退出登录
@@ -95,7 +84,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
@@ -107,19 +96,40 @@ import {
   SwapOutlined,
   AppstoreOutlined,
   DownOutlined,
-  LogoutOutlined
+  LogoutOutlined,
+  SafetyCertificateOutlined
 } from '@ant-design/icons-vue'
+import { useAuthStore, AUTH_STORAGE_KEY } from '@/stores/auth'
 
 const router = useRouter()
 const route = useRoute()
+const authStore = useAuthStore()
 
 const collapsed = ref(false)
 const selectedKeys = ref(['dashboard'])
 
-const userInfo = computed(() => {
-  const stored = localStorage.getItem('library_user')
-  return stored ? JSON.parse(stored) : { name: '用户', avatar: '' }
-})
+// 菜单配置：roles 与路由 meta.roles 保持一致
+const allMenus = [
+  { key: 'dashboard', title: '首页概览', icon: DashboardOutlined, roles: ['admin', 'librarian'] },
+  { key: 'books', title: '图书管理', icon: BookOutlined, roles: ['admin', 'librarian'] },
+  { key: 'readers', title: '读者管理', icon: UserOutlined, roles: ['admin'] },
+  { key: 'borrow', title: '借阅管理', icon: SwapOutlined, roles: ['admin', 'librarian'] },
+  { key: 'categories', title: '分类管理', icon: AppstoreOutlined, roles: ['admin', 'librarian'] }
+]
+
+// 按当前角色过滤可见菜单，普通角色看不到受限入口
+const visibleMenus = computed(() =>
+  allMenus.filter(menu => authStore.hasRole(menu.roles))
+)
+
+// 登录用户信息统一来自 auth store，退出/过期后界面立即响应
+const userInfo = computed(() => authStore.user || { name: '用户', avatar: '' })
+
+const ROLE_TEXT = {
+  admin: '管理员',
+  librarian: '图书管理员'
+}
+const roleText = computed(() => ROLE_TEXT[authStore.userRole] || '用户')
 
 const currentTitle = computed(() => {
   const titles = {
@@ -153,12 +163,56 @@ function handleLogout() {
     okText: '确定',
     cancelText: '取消',
     onOk() {
-      localStorage.removeItem('library_user')
+      // 清理登录态存储，并用 replace 跳转，避免后退回到管理页面
+      authStore.logout()
       message.success('已退出登录')
-      router.push('/login')
+      router.replace('/login')
     }
   })
 }
+
+// 会话失效时立即中止当前操作并回到登录页
+function forceToLogin(msg) {
+  if (route.path === '/login') return
+  authStore.logout()
+  if (msg) {
+    message.warning(msg)
+  }
+  router.replace('/login')
+}
+
+// 浏览器后退/前进从 bfcache 恢复页面时重新校验登录态
+function handlePageShow() {
+  if (!authStore.checkSession()) {
+    forceToLogin('登录状态已失效，请重新登录')
+  }
+}
+
+// 其他标签页退出登录后，本页同步失效
+function handleStorage(event) {
+  if (event.key === AUTH_STORAGE_KEY && !event.newValue) {
+    forceToLogin()
+  }
+}
+
+let sessionTimer = null
+
+onMounted(() => {
+  window.addEventListener('pageshow', handlePageShow)
+  window.addEventListener('storage', handleStorage)
+  // 定时校验令牌有效期，过期后立即退出到登录页
+  sessionTimer = window.setInterval(() => {
+    if (!authStore.checkSession()) {
+      forceToLogin('登录已过期，请重新登录')
+    }
+  }, 30000)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pageshow', handlePageShow)
+  window.removeEventListener('storage', handleStorage)
+  clearInterval(sessionTimer)
+})
 </script>
 
 <style lang="less" scoped>
